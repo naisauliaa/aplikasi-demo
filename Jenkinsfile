@@ -1,47 +1,57 @@
 pipeline {
-    agent any
-    
-    environment {
-        DOCKER_IMAGE = "naisaauliaa/aplikasi-demo"
-        
-        // ID credentials Docker Hub yang Anda simpan di Jenkins
-        DOCKER_CREDS = 'docker-hub-creds'
-    }
-
-    stages {
-        stage('Build Image') {
-            steps {
-                // Kita akan menggunakan nomor build Jenkins sebagai tag versi
-                // Contoh: 1, 2, 3, ...
-                def versionTag = "${env.BUILD_NUMBER}"
-                
-                echo "Membangun image: ${DOCKER_IMAGE}:${versionTag}"
-                
-                // Build image, dan teruskan nomor build sebagai APP_VERSION_ARG
-                // yang akan ditangkap oleh Dockerfile
-                sh "docker build --build-arg APP_VERSION_ARG=${versionTag} -t ${DOCKER_IMAGE}:${versionTag} ."
-                
-                // Beri tag 'latest' juga untuk image yang sama
-                sh "docker tag ${DOCKER_IMAGE}:${versionTag} ${DOCKER_IMAGE}:latest"
-            }
-        }
-        stage('Push to Docker Hub') {
-            steps {
-                echo "Mendorong image ke Docker Hub..."
-                // Login ke Docker Hub menggunakan credentials
-                sh "echo $DOCKER_CREDS_PSW | docker login -u $DOCKER_CREDS_USR --password-stdin"
-                
-                // Push kedua tag (versi dan latest)
-                sh "docker push ${DOCKER_IMAGE}:${env.BUILD_NUMBER}"
-                sh "docker push ${DOCKER_IMAGE}:latest"
-            }
-        }
-    }
-    post {
-        always {
-            // Selalu logout setelah selesai
-            echo "Logout dari Docker Hub"
-            sh "docker logout"
-        }
-    }
-}
+      agent any
+      
+      environment {
+          DOCKERHUB_CREDENTIALS = credentials('docker-hub-creds')
+          DOCKER_IMAGE = 'naisaauliaa/aplikasi-demo'
+          IMAGE_TAG = "${BUILD_NUMBER}"
+      }
+      
+      stages {
+          stage('Checkout') {
+              steps {
+                  checkout scm
+              }
+          }
+          
+          stage('Build Docker Image') {
+              steps {
+                  script {
+                      sh "docker build -t ${DOCKER_IMAGE}:${IMAGE_TAG} ."
+                      sh "docker tag ${DOCKER_IMAGE}:${IMAGE_TAG} ${DOCKER_IMAGE}:latest"
+                  }
+              }
+          }
+          
+          stage('Push to Docker Hub') {
+              steps {
+                  script {
+                      sh "echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin"
+                      sh "docker push ${DOCKER_IMAGE}:${IMAGE_TAG}"
+                      sh "docker push ${DOCKER_IMAGE}:latest"
+                  }
+              }
+          }
+          
+          stage('Update Kubernetes Manifest') {
+              steps {
+                  script {
+                      sh """
+                          sed -i 's|image: ${DOCKER_IMAGE}:.*|image: ${DOCKER_IMAGE}:${IMAGE_TAG}|g' k8s/deployment.yaml
+                          git config user.email "jenkins@example.com"
+                          git config user.name "Jenkins CI"
+                          git add k8s/deployment.yaml
+                          git commit -m "Update image to ${IMAGE_TAG}" || true
+                          git push origin main || true
+                      """
+                  }
+              }
+          }
+      }
+      
+      post {
+          always {
+              sh 'docker logout'
+          }
+      }
+  }
