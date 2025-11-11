@@ -1,57 +1,64 @@
 pipeline {
-      agent any
-      
-      environment {
-          DOCKERHUB_CREDENTIALS = credentials('docker-hub-creds')
-          DOCKER_IMAGE = 'naisaauliaa/aplikasi-demo'
-          IMAGE_TAG = "${BUILD_NUMBER}"
-      }
-      
-      stages {
-          stage('Checkout') {
-              steps {
-                  checkout scm
-              }
-          }
-          
-          stage('Build Docker Image') {
-              steps {
-                  script {
-                      sh "docker build -t ${DOCKER_IMAGE}:${IMAGE_TAG} ."
-                      sh "docker tag ${DOCKER_IMAGE}:${IMAGE_TAG} ${DOCKER_IMAGE}:latest"
-                  }
-              }
-          }
-          
-          stage('Push to Docker Hub') {
-              steps {
-                  script {
-                      sh "echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin"
-                      sh "docker push ${DOCKER_IMAGE}:${IMAGE_TAG}"
-                      sh "docker push ${DOCKER_IMAGE}:latest"
-                  }
-              }
-          }
-          
-          stage('Update Kubernetes Manifest') {
-              steps {
-                  script {
-                      sh """
-                          sed -i 's|image: ${DOCKER_IMAGE}:.*|image: ${DOCKER_IMAGE}:${IMAGE_TAG}|g' k8s/deployment.yaml
-                          git config user.email "jenkins@example.com"
-                          git config user.name "Jenkins CI"
-                          git add k8s/deployment.yaml
-                          git commit -m "Update image to ${IMAGE_TAG}" || true
-                          git push origin main || true
-                      """
-                  }
-              }
-          }
-      }
-      
-      post {
-          always {
-              sh 'docker logout'
-          }
-      }
-  }
+    // Tentukan agent 'docker' untuk memberi tahu Jenkins
+    // bahwa kita perlu terhubung ke Docker
+    agent any
+
+    environment {
+        // !! GANTI INI !! dengan nama image Anda di Docker Hub
+        DOCKER_IMAGE = "naisaauliaa/aplikasi-demo"
+        // ID credentials Docker Hub yang Anda simpan di Jenkins
+        DOCKER_CREDS = 'docker-hub-creds'
+    }
+
+    stages {
+        stage('Build Image') {
+            steps {
+                script {
+                    // Kita akan menggunakan nomor build Jenkins sebagai tag versi
+                    def versionTag = "${env.BUILD_NUMBER}"
+                    def imageName = "${DOCKER_IMAGE}:${versionTag}"
+                    def latestName = "${DOCKER_IMAGE}:latest"
+
+                    echo "Membangun image: ${imageName}"
+
+                    // 1. MEMBANGUN IMAGE (Sintaks Baru)
+                    // Gunakan 'docker.build'
+                    // Teruskan argumen APP_VERSION_ARG
+                    def customImage = docker.build(imageName, "--build-arg APP_VERSION_ARG=${versionTag} .")
+
+                    // 2. MEMBERI TAG (Sintaks Baru)
+                    customImage.tag(latestName)
+                }
+            }
+        }
+        stage('Push to Docker Hub') {
+            steps {
+                script {
+                    echo "Mendorong image ke Docker Hub..."
+                    
+                    // 3. LOGIN & PUSH (Sintaks Baru)
+                    // Gunakan 'docker.withRegistry'
+                    docker.withRegistry('https://registry.hub.docker.com', DOCKER_CREDS) {
+                        
+                        def versionTag = "${env.BUILD_NUMBER}"
+                        def imageName = "${DOCKER_IMAGE}:${versionTag}"
+                        def latestName = "${DOCKER_IMAGE}:latest"
+
+                        // Push tag versi
+                        docker.image(imageName).push()
+
+                        // Push tag 'latest'
+                        docker.image(latestName).push()
+                    }
+                }
+            }
+        }
+    }
+    // 'post' tidak berubah dan tetap berfungsi
+    post {
+        always {
+            echo "Pipeline Selesai"
+            // Logout sudah di-handle oleh withRegistry
+        }
+    }
+}
